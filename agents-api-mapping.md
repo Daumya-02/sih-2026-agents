@@ -74,3 +74,60 @@ Common auth and audit requirements (applies to both agents):
 - All admin-level changes must create `admin_audit` records capturing caller, action, SQL (if any), params, and before/after snapshots when possible.
 
 Reference: see `api-client-endpoints.md` and `api-admin-endpoints.md` for full schemas and SQL examples.
+
+## Additional fields needed for better accuracy
+
+**Profile — missing for lifestyle coaching:**
+
+- `weight`, `height` / BMI (diet/exercise suggestions need this)
+- `activityLevel` (sedentary/moderate/active)
+- `dietaryPreference` (veg/non-veg/vegan, allergies, restrictions)
+- `sleepGoalHours` / `typicalSleepHours`
+- `waterIntakeGoalMl`
+- `stressLevel` baseline (if self-reported)
+- `medications` (list — currently only `birthControl` and `healthConditions`)
+- `pregnancyStatus` / `tryingToConceive` (changes advice drastically)
+- `timezone` (for reminder logic)
+
+**Logs — missing for trend detection:**
+
+- `sleepHours` (numeric, per day) — you're inferring sleep from mood/symptoms, but no direct signal
+- `waterIntakeMl`
+- `exerciseMinutes` / `exerciseType`
+- `weight` (optional daily/weekly entry)
+- `stressLevel` (1-5 scale, more useful than mood tags alone)
+- `basalBodyTemp` (optional, for cycle-phase precision)
+- `painLevel` (1-10, separate from symptom tags — "cramps" alone doesn't tell severity)
+
+Without sleep/water/exercise/stress numeric fields, the agent's `diet`/`sleep`/`exercise`/`hydration` output fields have nothing to reason over except mood and symptom tags — it'll be guessing, not personalizing.
+
+## Datasets to use / generate
+
+No public dataset maps cleanly to this schema (menstrual + lifestyle logs are sensitive/rare in open data), so synthetic generation is the practical path:
+
+- **Reference for realistic ranges:** Kaggle's "Menstrual Cycle Data" / "FitBit Fitness Tracker Data" (public, for realistic sleep/exercise/step ranges) — use only to calibrate plausible value distributions, don't merge directly (different schema).
+- **Generate 4–5 synthetic user profiles + 30-60 days of logs each** covering distinct patterns:
+
+1. Regular cycle, active lifestyle, good sleep — baseline/healthy case
+2. Irregular cycle, PCOS flagged, poor sleep, high stress — tests `flags_for_doctor` logic
+3. On birth control, low symptom variance — tests suppressed-cycle handling
+4. Irregular sleep/hydration, frequent headaches/fatigue — tests correlation detection (e.g., low water → headache)
+5. Trying to conceive, tracking BBT — tests a completely different advice branch
+
+I can generate this synthetic dataset (JSON matching your exact schema, extended with the new fields) if useful — say the word and I'll build it as a file.
+
+## Agent output → endpoint mapping
+
+Agent
+Produces
+Sent to
+
+Lifestyle Coach
+`{summary, diet[], sleep[], exercise[], hydration[], flags_for_doctor[]}`
+Returned directly to caller (not persisted by default) — only a computed score/flag, if any, goes via `POST /admin/query` (UPDATE only)
+
+OCR Intake
+Short summary string (to caller/chat)
+Extracted structured fields go via `PATCH /users/{id}/profile` (health_conditions, birth_control, medications) and `PUT /users/{id}/logs/{date}` (symptoms, note, mood); anything unrepresentable falls back to `POST /admin/query` (last resort, gated)
+
+If you add the new fields above, both `update_profile`/`PATCH` and `update_log`/`PUT` need their schemas extended to accept them — currently the client schema you pasted has no room for sleep hours, water intake, weight, or stress level.
