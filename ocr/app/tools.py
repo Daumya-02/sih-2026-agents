@@ -1,14 +1,21 @@
 """
 Thin client around your Workers backend + LangChain tool wrappers.
 
-Design choice per your requirement: userId is NEVER put in the LLM prompt.
-`build_tools_for_user(user_id)` closes over the id, so every tool the
-model sees just takes the *fields* to read/write — the id is bound at
-the Python level, before the agent ever runs.
+Matches the REAL deployed schema (confirmed from live /profile and /logs
+responses):
+  - responses are wrapped: {"profile": {...}} and {"logs": [...]}
+  - fields are camelCase (healthConditions, trackPriorities, ...)
+  - healthConditions, medications, goals, trackPriorities, symptoms, mood
+    are all arrays, not comma-separated strings
+  - logs carry extra metrics: sleepHours, waterIntakeMl, exerciseMinutes,
+    exerciseType, weightKg, stressLevel, basalBodyTemp, painLevel
+
+userId is NEVER put in the LLM prompt — build_tools_for_user(user_id)
+closes over the id, so every tool the model sees just takes the *fields*
+to read/write; the id is bound at the Python level before the agent runs.
 """
 import httpx
-from datetime import date as date_type
-from typing import Optional
+from typing import Optional, List
 from langchain.tools import tool
 from pydantic import BaseModel, Field
 
@@ -22,7 +29,7 @@ _client = httpx.Client(base_url=BACKEND_BASE_URL, timeout=15.0)
 def _get_profile(user_id: int) -> dict:
     r = _client.get(f"/users/{user_id}/profile")
     r.raise_for_status()
-    return r.json()
+    return r.json()["profile"]
 
 
 def _patch_profile(user_id: int, fields: dict) -> dict:
@@ -31,10 +38,10 @@ def _patch_profile(user_id: int, fields: dict) -> dict:
     return r.json()
 
 
-def _get_logs(user_id: int) -> dict:
+def _get_logs(user_id: int) -> list:
     r = _client.get(f"/users/{user_id}/logs")
     r.raise_for_status()
-    return r.json()
+    return r.json()["logs"]
 
 
 def _put_log(user_id: int, log_date: str, fields: dict) -> dict:
@@ -63,35 +70,40 @@ def _admin_query(sql: str, params: Optional[list] = None) -> dict:
 # ---------- per-user tool factory ----------
 
 class ProfileUpdate(BaseModel):
-    health_conditions: Optional[str] = Field(None, description="Comma-separated conditions/allergies/diagnoses to merge into the profile, e.g. 'PCOS, penicillin allergy'")
-    birth_control: Optional[str] = None
-    goals: Optional[str] = None
-    track_priorities: Optional[str] = None
+    healthConditions: Optional[List[str]] = Field(None, description="FULL replacement list of conditions/diagnoses. Merge yourself: take what get_profile returned, add the new ones, pass the whole merged list — this overwrites, it does not append.")
+    medications: Optional[List[str]] = Field(None, description="FULL replacement list of medications (include dosage/timing in each string, e.g. 'Metformin 500mg BID'). Merge with existing before calling — this overwrites, it does not append.")
+    birthControl: Optional[str] = None
+    goals: Optional[List[str]] = None
+    trackPriorities: Optional[List[str]] = None
+    pregnancyStatus: Optional[str] = None
 
 
 class LogUpdate(BaseModel):
-    log_date: str = Field(..., description="YYYY-MM-DD. Use the report/prescription date if present, else today.")
-    symptoms: Optional[str] = Field(None, description="Comma-separated symptoms found in the report")
-    mood: Optional[str] = None
-    flow: Optional[str] = None
-    note: Optional[str] = Field(None, description="Free text: medications, dosage, timing, lab values, doctor notes — anything that doesn't fit a dedicated column")
+    log_date: str = Field(..., description="YYYY-MM-DD, path param. Use the report/prescription date if present, else today.")
+    symptoms: Optional[List[str]] = Field(None, description="FULL replacement list of symptoms for this day. Merge with the existing log's symptoms first.")
+    mood: Optional[List[str]] = None
+    flow: Optional[str] = Field(None, description="none | light | medium | heavy")
+    note: Optional[str] = Field(None, description="Free text for anything with no dedicated field — lab values, doctor remarks, etc.")
+    painLevel: Optional[int] = Field(None, description="0-10 scale, only if the report states it")
+    sleepHours: Optional[float] = None
+    stressLevel: Optional[int] = Field(None, description="If the report implies a stress/anxiety level, 1-5 scale")
 
 
 def build_tools_for_user(user_id: int):
 
     @tool("get_profile", return_direct=False)
     def get_profile() -> dict:
-        """Fetch this user's health profile (name, age, cycle info, health_conditions, birth_control, goals, etc.)."""
+        """Fetch this user's health profile: name, age, cycle info, goals, trackPriorities, healthConditions, medications, birthControl, pregnancyStatus, etc. ALWAYS call this before update_profile so you can merge array fields instead of overwriting them."""
         return _get_profile(user_id)
 
     @tool("get_logs", return_direct=False)
-    def get_logs() -> dict:
-        """Fetch this user's daily logs (date, flow, mood, symptoms, note)."""
+    def get_logs() -> list:
+        """Fetch this user's daily logs (date, flow, mood, symptoms, note, sleepHours, painLevel, etc). ALWAYS call this before update_log to find the matching date and merge its symptoms/mood arrays instead of overwriting them."""
         return _get_logs(user_id)
 
     @tool("update_profile", args_schema=ProfileUpdate)
     def update_profile(**fields) -> dict:
-        """Update profile-level fields. Only pass fields that changed; merge with existing values yourself before calling (read the profile first)."""
+        """Update profile-level fields. healthConditions/medications/goals/trackPriorities are FULL replacement arrays — read the current profile first and include existing values plus new ones, don't send only the new item."""
         clean = {k: v for k, v in fields.items() if v is not None}
         if not clean:
             return {"skipped": "no fields to update"}
@@ -99,7 +111,7 @@ def build_tools_for_user(user_id: int):
 
     @tool("update_log", args_schema=LogUpdate)
     def update_log(log_date: str, **fields) -> dict:
-        """Create/update a day's log entry with symptoms, mood, flow, or free-text notes extracted from a report."""
+        """Create/update a day's log entry. symptoms/mood are FULL replacement arrays — if a log already exists for this date, read it via get_logs first and merge, don't overwrite with only the new items."""
         clean = {k: v for k, v in fields.items() if v is not None}
         return _put_log(user_id, log_date, clean)
 
