@@ -33,7 +33,7 @@ def embed(text):
     raise RuntimeError("Failed after retries")
 
 def retrieve_guideline(query: str, k: int = 4) -> dict:
-    vec = embed(query)
+    vec = np.array([embed(query)], dtype="float32")
     distances, indices = _index.search(vec, k)
     results = [_chunks[i] for i in indices[0] if i != -1]
     return {"results": results}

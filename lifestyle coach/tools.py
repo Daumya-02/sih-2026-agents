@@ -19,6 +19,8 @@ def admin_query(sql: str) -> dict:
     """Controlled writes only. Called by the agent, never exposed to the frontend."""
     if not sql.strip().lower().startswith("update"):
         return {"error": "Only UPDATE statements are permitted via this tool."}
+    if not ADMIN_TOKEN:
+        return {"error": "ADMIN_TOKEN not configured server-side."}
     headers = {"Authorization": f"Bearer {ADMIN_TOKEN}"}
     r = requests.post(f"{BASE_URL}/admin/query", json={"query": sql},
                        headers=headers, timeout=15)
