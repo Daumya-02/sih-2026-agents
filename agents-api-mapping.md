@@ -66,9 +66,23 @@ Notes for backend implementers:
 - `PUT /users/{id}/logs/{date}` must perform UPSERT semantics and return the saved log with `id` and `updated_at`.
 - `POST /admin/query` must accept parameterized queries (`params`) and reject disallowed verbs or multi-statement SQL; log every call in `admin_audit` with `caller='agent:ocr_intake'` when used.
 
+## 3) Chat agent (`chatbot-agent/agent.py` + `chatbot-agent/tools.py`)
+
+- Purpose: general conversational Q&A grounded in the user's own profile/logs and WHO/ICMR/ACOG guidelines. Read-only — this agent never writes to the backend.
+
+- Tools and HTTP endpoints called:
+  - `get_user_profile` -> GET `/users/{user_id}/profile` (same as the lifestyle coach agent).
+  - `get_user_logs` -> GET `/users/{user_id}/logs` (same as the lifestyle coach agent). The `note`/`symptoms` fields are how it reads medical-report data the OCR intake agent previously wrote — there's no separate "reports" store; the chat agent summarizes report-derived data by reading these same log fields.
+  - `retrieve_guideline` — NOT an HTTP backend call. Same local FAISS index as the lifestyle coach agent (`guideline_index.faiss` / `guideline_chunks.pkl`, copied into `chatbot-agent/` so the service is self-contained).
+  - No `admin_query` — this agent is intentionally read-only.
+
+- Agent output returned to caller: plain conversational reply text via `POST /agent/chat/{user_id}` (`{"message": "..."}` -> `{"user_id", "reply"}`). `DELETE /agent/chat/{user_id}` clears that user's in-memory conversation history.
+
+- Safety behavior (system prompt, not a backend contract): never diagnoses; flags red-flag symptoms and recommends seeing a doctor/gynecologist; since there's no location/clinic-directory data anywhere in this stack, it explicitly avoids inventing clinic names and instead points the user to search for one themselves.
+
 ---
 
-Common auth and audit requirements (applies to both agents):
+Common auth and audit requirements (the admin-query points apply only to the lifestyle coach and OCR agents — the chat agent has no admin/write path):
 - Service/admin calls must use `Authorization: Bearer <ADMIN_TOKEN>` for `POST /admin/query` and any other admin endpoints.
 - Agents bind `user_id` server-side (tools close over `user_id`) so the LLM never receives raw identifiers — backend must still validate the token/credentials mapping to `user_id` for safety.
 - All admin-level changes must create `admin_audit` records capturing caller, action, SQL (if any), params, and before/after snapshots when possible.
