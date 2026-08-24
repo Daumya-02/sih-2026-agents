@@ -1,4 +1,4 @@
-import os, json
+import os, json, re
 from google import genai
 from google.genai import types
 from tools import get_user_profile, get_user_logs, admin_query
@@ -72,7 +72,7 @@ def dispatch(name, args, user_id):
 
 def run_lifestyle_coach(user_id: str) -> dict:
     chat = client.chats.create(
-        model="gemini-2.0-flash",
+        model=os.getenv("LLM_MODEL", "gemini-3.6-flash"),
         config=types.GenerateContentConfig(
             system_instruction=SYSTEM_PROMPT,
             tools=TOOLS,
@@ -90,7 +90,10 @@ def run_lifestyle_coach(user_id: str) -> dict:
             parts.append(types.Part.from_function_response(name=fc.name, response={"result": result}))
         response = chat.send_message(parts)
 
-    text = (response.text or "").strip().strip("```json").strip("```")
+    text = (response.text or "").strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
     try:
         return json.loads(text)
     except json.JSONDecodeError:
