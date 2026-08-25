@@ -102,7 +102,7 @@ def _get_session(user_id: int):
     chat = _sessions.get(user_id)
     if chat is None:
         chat = client.chats.create(
-            model=os.getenv("LLM_MODEL", "gemini-3.6-flash"),
+            model=os.getenv("LLM_MODEL", "gemini-3.5-flash-lite"),
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
                 tools=TOOLS,

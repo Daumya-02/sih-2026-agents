@@ -72,7 +72,7 @@ def dispatch(name, args, user_id):
 
 def run_lifestyle_coach(user_id: str) -> dict:
     chat = client.chats.create(
-        model=os.getenv("LLM_MODEL", "gemini-3.6-flash"),
+        model=os.getenv("LLM_MODEL", "gemini-3.5-flash-lite"),
         config=types.GenerateContentConfig(
             system_instruction=SYSTEM_PROMPT,
             tools=TOOLS,

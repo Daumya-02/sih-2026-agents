@@ -1,9 +1,11 @@
+import os
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from agent import chat_with_user, reset_session
+from ratelimit import enforce_rate_limit
 
 app = FastAPI(title="Women's Health — Chat Agent")
 
@@ -14,6 +16,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+RATE_LIMIT_MAX = int(os.getenv("RATE_LIMIT_MAX", "20"))
+RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))
+
 
 class ChatRequest(BaseModel):
     message: str
@@ -21,6 +26,7 @@ class ChatRequest(BaseModel):
 
 @app.post("/agent/chat/{user_id}")
 async def chat(user_id: int, body: ChatRequest):
+    enforce_rate_limit(str(user_id), RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_SECONDS)
     try:
         # chat_with_user is sync (LLM round-trips, tool calls) — offload so one
         # user's turn doesn't block every other concurrent request.

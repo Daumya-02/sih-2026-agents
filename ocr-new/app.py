@@ -1,13 +1,20 @@
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+import os
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from datetime import date
 
 from ocr_agent import extract_medical_information
 from backend_client import get_logs, update_log
+from ratelimit import enforce_rate_limit
 
 
 app = FastAPI(
     title="Medical OCR Agent"
 )
+
+# /ocr has no user_id (it doesn't touch the backend), so it's rate-limited by
+# client IP instead; /ocr-and-log is keyed by user_id like the other agents.
+RATE_LIMIT_MAX = int(os.getenv("RATE_LIMIT_MAX", "5"))
+RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))
 
 
 @app.get("/")
@@ -19,8 +26,11 @@ def root():
 
 @app.post("/ocr")
 async def process_document(
+    request: Request,
     file: UploadFile = File(...)
 ):
+    client_ip = request.client.host if request.client else "unknown"
+    enforce_rate_limit(client_ip, RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_SECONDS)
     try:
         image_bytes = await file.read()
 
@@ -47,6 +57,7 @@ async def process_document_and_log(
     file: UploadFile = File(...),
     log_date: str = Form(None)
 ):
+    enforce_rate_limit(str(user_id), RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_SECONDS)
     try:
 
         # --------------------------------
